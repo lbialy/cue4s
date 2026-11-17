@@ -45,9 +45,20 @@ private[cue4s] def scalanative_get_window_size(ws: Ptr[WinSize]): Int =
   extern
 
 object TerminalResizingHandler:
-  // We are using this var here because we can't capture @send variable from dynamic scope inside the C function pointer.
-  // All the terms used in the signal handler must come from static scopes (in this case it has a stable path, TerminalResizingHandler.sender)
-  private var sender = Option.empty[TerminalEvent.Resized => Unit]
+  // The signal handler only flips this flag: running arbitrary Scala code
+  // (allocation, rendering, monitors) inside a signal handler is unsafe and
+  // crashes when the interrupted thread holds a lock the handler needs.
+  // A watcher thread turns the flag into Resized events.
+  @volatile private var pending = false
+
+  private def measure(): TerminalEvent.Resized =
+    val ws = stackalloc[WinSize]()
+    scalanative_get_window_size(ws)
+    TerminalEvent.Resized(
+      (!ws).row.toInt.asInstanceOf[TerminalRows],
+      (!ws).col.toInt.asInstanceOf[TerminalCols],
+    )
+
   def use[A](send: TerminalEvent.Resized => Unit)(
       f: => A,
   ): A =
@@ -56,36 +67,32 @@ object TerminalResizingHandler:
     else
       // Immediately after this handler is invoked, we send the first measurement of the terminal.
       // Users should receive `TerminalEvent.Init` and then `TerminalEvent.Resized`
-      val ws = stackalloc[WinSize]()
-      scalanative_get_window_size(ws)
-      send(
-        TerminalEvent
-          .Resized(
-            (!ws).row.toInt.asInstanceOf[TerminalRows],
-            (!ws).col.toInt.asInstanceOf[TerminalCols],
-          ),
+      send(measure())
+      @volatile var running = true
+      val watcher = new Thread(
+        () =>
+          while running do
+            if pending then
+              pending = false
+              send(measure())
+            try Thread.sleep(25)
+            catch case _: InterruptedException => ()
+        ,
+        "cue4s-resize-watcher",
       )
+      watcher.setDaemon(true)
       try
-        sender = Some(send)
         signal(
           scalanative_sigwinch(),
           CFuncPtr1.fromScalaFunction: _ =>
-            val ws = stackalloc[WinSize]()
-            scalanative_get_window_size(ws)
-            sender.foreach(
-              _.apply(
-                TerminalEvent
-                  .Resized(
-                    (!ws).row.toInt.asInstanceOf[TerminalRows],
-                    (!ws).col.toInt.asInstanceOf[TerminalCols],
-                  ),
-              ),
-            ),
+            pending = true,
         )
+        watcher.start()
         f
       finally
         signal(scalanative_sigwinch(), SIG_DFL)
-        sender = None
+        running = false
+        watcher.interrupt()
       end try
   end use
 end TerminalResizingHandler
