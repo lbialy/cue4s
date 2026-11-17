@@ -22,11 +22,6 @@ import scalanative.unsafe.*
 
 object ChangeModeLinux extends ChangeModeUnix:
 
-  override def read(): Int =
-    val b = stackalloc[Byte](1)
-    read(STDIN_FILENO, b, 1)
-    b(0)
-
   import scalanative.posix.termios.{TCSANOW, ECHO, ICANON}
   import scalanative.unsafe.Nat.*
   private type tcflag_t = CInt /// SIC!!!

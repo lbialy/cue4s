@@ -21,12 +21,19 @@ import scala.scalanative.unsafe.*
 trait ChangeModeUnix extends ChangeModeNative:
   val STDIN_FILENO = 0
 
-  @extern def read(fd: Int, buf: Ptr[Byte], count: Int): Int = extern
+  // @blocking: the keyboard thread spends most of its time in read(2); without
+  // it, every stop-the-world GC in a multithreaded program waits for read to
+  // return (up to VTIME = 0.5s), stalling other threads.
+  @extern @blocking def read(fd: Int, buf: Ptr[Byte], count: Int): Int = extern
 
+  /** One byte of input as 0..255, or 0 when nothing was read (VTIME timeout,
+    * EINTR from SIGWINCH). The raw byte must be masked: returning a signed byte
+    * makes every non-ASCII (UTF-8) byte negative, which the keyboard thread
+    * treats as end of input and stops reading.
+    */
   override def read(): Int =
     val b = stackalloc[Byte](1)
-    read(STDIN_FILENO, b, 1)
-    b(0)
+    if read(STDIN_FILENO, b, 1) == 1 then b(0) & 0xff else 0
 
   protected inline def assertAndReturn(b: Boolean, msg: String) =
     assert(b, msg)
