@@ -294,9 +294,7 @@ trait PromptFramework[Result](terminal: Terminal, out: Output)
       ev match
         case TerminalEvent.Resized(rows, cols) =>
           stateTransition(terminalSize = _ => Some(cols))
-          if rendering.changed || rendering.last.isEmpty then
-            printPrompt()
-            rendering.forgetChanges()
+          render()
         case _ =>
 
       manage(handleEvent(ev))
@@ -347,9 +345,7 @@ trait PromptFramework[Result](terminal: Terminal, out: Output)
         out.logLn(s"Submitted value: $value, ${status.current}")
         Next.Done(value)
 
-    if rendering.changed || rendering.last.isEmpty then
-      printPrompt()
-      rendering.forgetChanges()
+    render()
 
     next
   end manage
@@ -371,53 +367,97 @@ trait PromptFramework[Result](terminal: Terminal, out: Output)
         )
   end stateTransition
 
+  /** Prints the current rendering if it changed. Synchronized because events
+    * can arrive from several threads (keyboard, resize watcher, [[send]]).
+    */
+  private def render(): Unit =
+    this.synchronized:
+      if rendering.changed || rendering.last.isEmpty then
+        printPrompt()
+        rendering.forgetChanges()
+
+  /** Draws the current rendering over the previous one, touching only the lines
+    * that changed: they are overwritten in place and cleared to the end of the
+    * line, so the screen never passes through an erased state (which is what
+    * made full clear-and-repaint flicker). The whole frame is emitted as one
+    * write inside a synchronized update.
+    *
+    * Invariant: between frames the cursor is at column 0 of the prompt's first
+    * row.
+    */
   private def printPrompt() =
-    terminal.cursorHide()
-    rendering.last match
-      case None =>
-        // We don't use cursor save/restore here because after outputing empty lines,
-        // the terminal might scroll and the saved cursor position would be incorrect
-        out.logLn("Freeing up empty space for initial rendering")
-        rendering.current.foreach: _ =>
-          terminal.eraseToEndOfLine()
-          out.outLn("")
-        terminal.moveUp(rendering.current.length).moveHorizontalTo(0)
-      case Some(last) =>
-        if last.length == rendering.current.length then
-          out.logLn(
-            "Clearing just for current rendering (same length as before)",
-          )
-          terminal.withRestore:
-            clear(last, terminalSize.current)
-        else if last.length < rendering.current.length then
-          out.logLn(
-            s"Current rendering is longer than previous one, clearing ${rendering.current.length} rows",
-          )
-          rendering.current.foreach: _ =>
-            terminal.eraseToEndOfLine()
-            out.outLn("")
-          terminal.moveUp(rendering.current.length).moveHorizontalTo(0)
-        else
-          out.logLn(
-            s"Clearing because previous rendering was longer ${last.length} vs ${rendering.current.length}",
-          )
-          terminal.withRestore:
-            clear(last, terminalSize.current)
-    end match
+    // a size of 0 (e.g. not a tty) means the width is unknown
+    val cols: Option[Int] = terminalSize.current.map(c => c: Int).filter(_ > 0)
+    val current           = rendering.current
+    val last              = rendering.last.getOrElse(Nil)
+    val newRows           = current.map(TextWidth.rows(_, cols)).toArray
+    val oldRows           = last.map(TextWidth.rows(_, cols)).toArray
+    val newTotal          = newRows.sum
+    val oldTotal          = oldRows.sum
+    val finished = currentStatus() match
+      case _: Status.Finished | Status.Canceled => true
+      case _                                    => false
 
     out.logLn(
-      s"Rendering with terminal size: ${terminalSize.current}:",
+      s"Rendering ${current.length} lines ($newTotal rows, previously $oldTotal) with terminal size: ${terminalSize.current}:",
     )
-    rendering.current.zipWithIndex.foreach { (line, index) =>
+    current.zipWithIndex.foreach { (line, index) =>
       out.logLn(s"    ${(index + 1).toString.padTo(4, ' ')}|$line")
     }
-    currentStatus() match
-      case _: Status.Finished | Status.Canceled =>
-        rendering.current.foreach(l => out.outLn(l))
+
+    out.beginFrame()
+    try
+      terminal.beginSynchronizedUpdate()
+      terminal.cursorHide()
+
+      // Make room when the prompt grows. Newlines scroll the screen when the
+      // prompt sits at the bottom, which would invalidate a saved cursor
+      // position, so we move back up relatively instead.
+      if newTotal > oldTotal then
+        out.out("\n" * newTotal)
+        terminal.moveUp(newTotal).moveHorizontalTo(0)
+
+      terminal.save()
+      var cursorRow = 0
+      def goTo(row: Int): Unit =
+        if row > cursorRow then terminal.moveDown(row - cursorRow)
+        terminal.moveHorizontalTo(0)
+        cursorRow = row
+
+      var row     = 0
+      var aligned = true // previous frame's lines are at the same rows so far
+      var i       = 0
+      for line <- current do
+        val rows      = newRows(i)
+        val unchanged = aligned && i < last.length && last(i) == line
+        if !unchanged then
+          goTo(row)
+          out.out(line)
+          val width = TextWidth.of(line)
+          // a line exactly filling its last row leaves the cursor in the
+          // pending-wrap state, where erasing would delete its last character
+          if !cols.exists(c => width > 0 && width % c == 0) then
+            terminal.eraseToEndOfLine()
+          cursorRow = row + rows - 1
+        if i >= last.length || oldRows(i) != rows then aligned = false
+        row += rows
+        i += 1
+      end for
+      // rows left over from a taller previous frame
+      for r <- newTotal until oldTotal do
+        goTo(r)
+        terminal.eraseEntireLine()
+
+      terminal.restore()
+
+      if finished then
+        // leave the cursor below the final rendering
+        out.out("\n" * newTotal)
         terminal.cursorShow()
-      case _ =>
-        terminal.withRestore:
-          rendering.current.foreach(l => out.outLn(l))
+    finally
+      terminal.endSynchronizedUpdate()
+      out.endFrame()
+    end try
   end printPrompt
 
   def clear(lines: List[String], cols: Option[TerminalCols]) =
