@@ -21,6 +21,17 @@ trait Output:
   def logLn[A: AsString](a: => A): Unit
   def close(): Unit = ()
 
+  /** Called before a prompt starts writing one rendered frame. Outputs backed
+    * by a real terminal should buffer everything written until [[endFrame]] and
+    * emit it in a single write - otherwise the terminal may display a
+    * half-drawn frame, which is perceived as flicker.
+    */
+  def beginFrame(): Unit = ()
+
+  /** Called after a frame is complete, see [[beginFrame]]. */
+  def endFrame(): Unit = ()
+end Output
+
 trait AsString[A]:
   extension (a: A) def render: String
 
@@ -64,6 +75,8 @@ object Output:
     override def logLn[A: AsString](a: => A): Unit = ()
     override def out[A: AsString](a: A): Unit      = Std.out(a)
     override def close(): Unit                     = Std.close()
+    override def beginFrame(): Unit                = Std.beginFrame()
+    override def endFrame(): Unit                  = Std.endFrame()
   end StdNoLogging
 
   object DarkVoid extends Output:

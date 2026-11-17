@@ -17,9 +17,31 @@
 package cue4s
 
 private[cue4s] trait PlatformStd extends Output:
+  // frames are collected here and written to stdout in one go
+  private val frame      = new java.lang.StringBuilder
+  private var frameDepth = 0
+
   override def logLn[A: AsString](a: => A): Unit =
     System.err.println(a.render)
     System.err.flush()
+
   override def out[A: AsString](a: A): Unit =
-    System.out.print(a.render)
-    System.out.flush()
+    val s = a.render
+    this.synchronized:
+      if frameDepth > 0 then frame.append(s)
+      else
+        System.out.print(s)
+        System.out.flush()
+
+  override def beginFrame(): Unit =
+    this.synchronized:
+      frameDepth += 1
+
+  override def endFrame(): Unit =
+    this.synchronized:
+      frameDepth = (frameDepth - 1).max(0)
+      if frameDepth == 0 && frame.length > 0 then
+        System.out.print(frame.toString)
+        System.out.flush()
+        frame.setLength(0)
+end PlatformStd

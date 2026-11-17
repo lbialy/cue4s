@@ -38,4 +38,6 @@ object FileLogging:
         fw.flush()
       override def out[A: AsString](a: A): Unit = originalOut.out(a)
       override def close(): Unit                = fw.close()
+      override def beginFrame(): Unit           = originalOut.beginFrame()
+      override def endFrame(): Unit             = originalOut.endFrame()
 end FileLogging
