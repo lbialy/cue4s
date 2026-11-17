@@ -56,6 +56,15 @@ trait Terminal:
 
   def restore(): self.type
 
+  /** Starts a synchronized update (DEC private mode 2026): supporting terminals
+    * hold off displaying anything until [[endSynchronizedUpdate]], so a frame
+    * appears atomically. Terminals without support ignore it.
+    */
+  def beginSynchronizedUpdate(): self.type = this
+
+  /** Ends a synchronized update, see [[beginSynchronizedUpdate]]. */
+  def endSynchronizedUpdate(): self.type = this
+
   inline def withRestore[A](inline f: => A) =
     save()
     f

@@ -59,6 +59,9 @@ class AnsiTerminal(out: Output) extends Terminal:
   override inline def moveUp(n: Int): this.type =
     csi('A', n)
 
+  override def beginSynchronizedUpdate(): this.type = call(s"$CSI?2026h")
+  override def endSynchronizedUpdate(): this.type   = call(s"$CSI?2026l")
+
   override inline def restore(): this.type     = call(s"${ESC}8")
   override inline def save(): this.type        = call(s"${ESC}7")
   override inline def screenClear(): this.type = call(s"${ESC}c")
