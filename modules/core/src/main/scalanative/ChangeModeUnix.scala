@@ -21,7 +21,10 @@ import scala.scalanative.unsafe.*
 trait ChangeModeUnix extends ChangeModeNative:
   val STDIN_FILENO = 0
 
-  @extern def read(fd: Int, buf: Ptr[Byte], count: Int): Int = extern
+  // @blocking: the keyboard thread spends most of its time in read(2); without
+  // it, every stop-the-world GC in a multithreaded program waits for read to
+  // return (up to VTIME = 0.5s), stalling other threads.
+  @extern @blocking def read(fd: Int, buf: Ptr[Byte], count: Int): Int = extern
 
   override def read(): Int =
     val b = stackalloc[Byte](1)
